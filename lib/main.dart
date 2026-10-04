@@ -50,6 +50,7 @@ class Expense {
   final int totalAmount;
   final String payerId;
   final List<String> involvedIds;
+  final DateTime dateTime; // 지출 일시 추가
 
   Expense({
     required this.id,
@@ -57,6 +58,7 @@ class Expense {
     required this.totalAmount,
     required this.payerId,
     required this.involvedIds,
+    required this.dateTime,
   });
 }
 
@@ -73,7 +75,7 @@ class TransferTransaction {
 }
 
 // ---------------------------------------------------------------------------
-// 2. 정산 계산 로직 (최소 송금 알고리즘)
+// 2. 정산 계산 로직 및 포맷 유틸
 // ---------------------------------------------------------------------------
 class SettlementCalculator {
   static const int unit = 10; // 10원 단위 절사
@@ -148,6 +150,16 @@ class SettlementCalculator {
       (Match m) => '${m[1]},',
     );
   }
+
+  // 날짜/시간 포맷팅 (YYYY.MM.DD HH:mm)
+  static String formatDateTime(DateTime dt) {
+    final y = dt.year;
+    final m = dt.month.toString().padLeft(2, '0');
+    final d = dt.day.toString().padLeft(2, '0');
+    final hh = dt.hour.toString().padLeft(2, '0');
+    final mm = dt.minute.toString().padLeft(2, '0');
+    return '$y.$m.$d $hh:$mm';
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -174,6 +186,7 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
       totalAmount: 96000,
       payerId: '1',
       involvedIds: ['1', '2', '3'],
+      dateTime: DateTime.now(),
     ),
   ];
 
@@ -229,8 +242,9 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
     buffer.writeln('참여자: ${_participants.map((p) => p.name).join(', ')}');
     buffer.writeln('\n🧾 [차수별 지출]');
     for (var exp in _expenses) {
+      final dateStr = SettlementCalculator.formatDateTime(exp.dateTime);
       buffer.writeln(
-          '• ${exp.title}: ${SettlementCalculator.formatCurrency(exp.totalAmount)}원 (결제자: ${_getParticipantName(exp.payerId)})');
+          '• ${exp.title} ($dateStr): ${SettlementCalculator.formatCurrency(exp.totalAmount)}원 (결제자: ${_getParticipantName(exp.payerId)})');
     }
     buffer.writeln('\n💸 [최소 송금 안내]');
     for (var t in transfers) {
@@ -384,7 +398,18 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
                             ),
                           ],
                         ),
-                        const SizedBox(height: 6),
+                        const SizedBox(height: 4),
+                        Row(
+                          children: [
+                            const Icon(Icons.access_time, size: 14, color: Color(0xFF94A3B8)),
+                            const SizedBox(width: 4),
+                            Text(
+                              SettlementCalculator.formatDateTime(exp.dateTime),
+                              style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 12, fontWeight: FontWeight.w500),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
                         Text(
                           '결제자: ${_getParticipantName(exp.payerId)}',
                           style: const TextStyle(color: Color(0xFF64748B), fontSize: 13),
@@ -430,6 +455,7 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
     final amountController = TextEditingController();
     String selectedPayerId = _participants.first.id;
     List<String> selectedInvolved = _participants.map((p) => p.id).toList();
+    DateTime selectedDateTime = DateTime.now(); // 기본값: 현재 날짜 및 시간
 
     showModalBottomSheet(
       context: context,
@@ -465,7 +491,73 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
                       keyboardType: TextInputType.number,
                       decoration: const InputDecoration(labelText: '결제 총액 (원)', suffixText: '원'),
                     ),
+                    const SizedBox(height: 14),
+
+                    // --- 날짜 및 시간 선택 UI ---
+                    const Text('지출 일시', style: TextStyle(fontWeight: FontWeight.w600, color: Color(0xFF475569))),
+                    const SizedBox(height: 6),
+                    InkWell(
+                      onTap: () async {
+                        // 1. 날짜 선택기
+                        final pickedDate = await showDatePicker(
+                          context: context,
+                          initialDate: selectedDateTime,
+                          firstDate: DateTime(2020),
+                          lastDate: DateTime(2035),
+                        );
+                        if (pickedDate == null) return;
+
+                        if (!ctx.mounted) return;
+
+                        // 2. 시간 선택기
+                        final pickedTime = await showTimePicker(
+                          context: context,
+                          initialTime: TimeOfDay.fromDateTime(selectedDateTime),
+                        );
+                        if (pickedTime == null) return;
+
+                        // 날짜와 시간 결합
+                        setModalState(() {
+                          selectedDateTime = DateTime(
+                            pickedDate.year,
+                            pickedDate.month,
+                            pickedDate.day,
+                            pickedTime.hour,
+                            pickedTime.minute,
+                          );
+                        });
+                      },
+                      borderRadius: BorderRadius.circular(8),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFF1F5F9),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: const Color(0xFFCBD5E1)),
+                        ),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Row(
+                              children: [
+                                const Icon(Icons.calendar_month_outlined, size: 18, color: Color(0xFF2563EB)),
+                                const SizedBox(width: 8),
+                                Text(
+                                  SettlementCalculator.formatDateTime(selectedDateTime),
+                                  style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14, color: Color(0xFF1E293B)),
+                                ),
+                              ],
+                            ),
+                            const Text(
+                              '변경',
+                              style: TextStyle(color: Color(0xFF2563EB), fontWeight: FontWeight.bold, fontSize: 13),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
                     const SizedBox(height: 16),
+
                     const Text('누가 결제했나요?', style: TextStyle(fontWeight: FontWeight.w600, color: Color(0xFF475569))),
                     DropdownButton<String>(
                       value: selectedPayerId,
@@ -517,6 +609,7 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
                             totalAmount: amount,
                             payerId: selectedPayerId,
                             involvedIds: selectedInvolved,
+                            dateTime: selectedDateTime,
                           ));
                           Navigator.pop(ctx);
                         },
