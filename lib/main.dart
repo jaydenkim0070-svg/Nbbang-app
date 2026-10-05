@@ -1,6 +1,7 @@
-
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   runApp(const DutchPayApp());
@@ -36,7 +37,7 @@ class DutchPayApp extends StatelessWidget {
 }
 
 // ---------------------------------------------------------------------------
-// 1. 도메인 모델 & 통화 정의
+// 1. 도메인 모델 & 통화 정의 (JSON 직렬화 포함)
 // ---------------------------------------------------------------------------
 enum CurrencyType {
   jpy('JPY', '엔화 (¥)', '엔'),
@@ -54,6 +55,11 @@ class Participant {
   final String name;
 
   Participant({required this.id, required this.name});
+
+  Map<String, dynamic> toJson() => {'id': id, 'name': name};
+
+  factory Participant.fromJson(Map<String, dynamic> json) =>
+      Participant(id: json['id'] ?? '', name: json['name'] ?? '');
 }
 
 class Expense {
@@ -74,6 +80,33 @@ class Expense {
     required this.involvedIds,
     required this.dateTime,
   });
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'title': title,
+        'totalAmount': totalAmount,
+        'currency': currency.name,
+        'payerId': payerId,
+        'involvedIds': involvedIds,
+        'dateTime': dateTime.toIso8601String(),
+      };
+
+  factory Expense.fromJson(Map<String, dynamic> json) {
+    CurrencyType curr = CurrencyType.jpy;
+    try {
+      curr = CurrencyType.values.firstWhere((c) => c.name == json['currency']);
+    } catch (_) {}
+
+    return Expense(
+      id: json['id'] ?? '',
+      title: json['title'] ?? '',
+      totalAmount: json['totalAmount'] ?? 0,
+      currency: curr,
+      payerId: json['payerId'] ?? '',
+      involvedIds: List<String>.from(json['involvedIds'] ?? []),
+      dateTime: DateTime.tryParse(json['dateTime'] ?? '') ?? DateTime.now(),
+    );
+  }
 }
 
 class TransferTransaction {
@@ -256,7 +289,7 @@ class SettlementCalculator {
 }
 
 // ---------------------------------------------------------------------------
-// 3. 메인 화면
+// 3. 메인 화면 (저장소 데이터 영구 보존)
 // ---------------------------------------------------------------------------
 class SettlementMainScreen extends StatefulWidget {
   const SettlementMainScreen({super.key});
@@ -266,24 +299,13 @@ class SettlementMainScreen extends StatefulWidget {
 }
 
 class _SettlementMainScreenState extends State<SettlementMainScreen> {
-  final List<Participant> _participants = [
+  List<Participant> _participants = [
     Participant(id: '1', name: '기명'),
     Participant(id: '2', name: '쩝'),
     Participant(id: '3', name: '인발'),
   ];
 
-  final List<Expense> _expenses = [
-    Expense(
-      id: 'e1',
-      title: '1차 라멘',
-      totalAmount: 4500,
-      currency: CurrencyType.jpy,
-      payerId: '1',
-      involvedIds: ['1', '2', '3'],
-      dateTime: DateTime.now(),
-    ),
-  ];
-
+  List<Expense> _expenses = [];
   double _jpyRate = 920.0;
   final double _usdRate = 1380.0;
   late final TextEditingController _jpyRateController;
@@ -292,12 +314,66 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
   void initState() {
     super.initState();
     _jpyRateController = TextEditingController(text: _jpyRate.toStringAsFixed(0));
+    _loadSavedData(); // 시작 시 저장된 데이터 복원
   }
 
   @override
   void dispose() {
     _jpyRateController.dispose();
     super.dispose();
+  }
+
+  // --- 로컬 디스크 데이터 불러오기 ---
+  Future<void> _loadSavedData() async {
+    final prefs = await SharedPreferences.getInstance();
+
+    final savedRate = prefs.getDouble('jpy_rate');
+    if (savedRate != null) {
+      _jpyRate = savedRate;
+      _jpyRateController.text = _jpyRate.toStringAsFixed(0);
+    }
+
+    final pJson = prefs.getString('participants_data');
+    if (pJson != null) {
+      final List decoded = jsonDecode(pJson);
+      _participants = decoded.map((e) => Participant.fromJson(e)).toList();
+    }
+
+    final eJson = prefs.getString('expenses_data');
+    if (eJson != null) {
+      final List decoded = jsonDecode(eJson);
+      _expenses = decoded.map((e) => Expense.fromJson(e)).toList();
+    } else {
+      // 최초 실행 시에만 기본 샘플 제공
+      _expenses = [
+        Expense(
+          id: 'e1',
+          title: '1차 라멘',
+          totalAmount: 4500,
+          currency: CurrencyType.jpy,
+          payerId: '1',
+          involvedIds: ['1', '2', '3'],
+          dateTime: DateTime.now(),
+        ),
+      ];
+      _saveAllData();
+    }
+
+    if (mounted) setState(() {});
+  }
+
+  // --- 로컬 디스크에 데이터 영구 저장 ---
+  Future<void> _saveAllData() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble('jpy_rate', _jpyRate);
+    await prefs.setString(
+      'participants_data',
+      jsonEncode(_participants.map((p) => p.toJson()).toList()),
+    );
+    await prefs.setString(
+      'expenses_data',
+      jsonEncode(_expenses.map((e) => e.toJson()).toList()),
+    );
   }
 
   void _addParticipant(String name) {
@@ -308,6 +384,7 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
         name: name.trim(),
       ));
     });
+    _saveAllData();
   }
 
   void _removeParticipant(String id) {
@@ -318,6 +395,7 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
         e.involvedIds.remove(id);
       }
     });
+    _saveAllData();
   }
 
   void _saveExpense(Expense expense, {bool isEdit = false}) {
@@ -331,12 +409,14 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
         _expenses.add(expense);
       }
     });
+    _saveAllData();
   }
 
   void _removeExpense(String id) {
     setState(() {
       _expenses.removeWhere((e) => e.id == id);
     });
+    _saveAllData();
   }
 
   String _getParticipantName(String id) {
@@ -428,7 +508,7 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
 
     return DefaultTabController(
       length: 3,
-      initialIndex: 1, // 앱 시작 시 '2. 지출 등록' 화면 노출
+      initialIndex: 1,
       child: Scaffold(
         appBar: AppBar(
           title: const Text('N빵 스마트 정산기', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
@@ -456,7 +536,6 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
     );
   }
 
-  // 1탭: 참가자 관리
   Widget _buildParticipantsTab() {
     final textController = TextEditingController();
 
@@ -534,7 +613,6 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
     );
   }
 
-  // 2탭: 날짜별 지출 목록
   Widget _buildExpensesTab() {
     if (_expenses.isEmpty) {
       return Scaffold(
@@ -679,7 +757,6 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
     );
   }
 
-  // 지출 등록 모달
   void _openExpenseFormModal({Expense? expenseToEdit}) {
     if (_participants.length < 2) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -964,7 +1041,6 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
     );
   }
 
-  // 3탭: 정산 결과 (스크롤 없이 한 화면에 완벽히 들어오는 컴팩트 구조)
   Widget _buildSettlementResultTab(
     List<TransferTransaction> transfers,
     int totalSpentKrw,
@@ -975,7 +1051,6 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // 1. 총 지출 & 엔화 환율 결합 카드 (1줄 배치로 공간 대폭 절약)
           Card(
             color: const Color(0xFFEFF6FF),
             child: Padding(
@@ -1024,6 +1099,7 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
                               setState(() {
                                 _jpyRate = parsed;
                               });
+                              _saveAllData(); // 환율 변경 시에도 즉시 저장
                             }
                           },
                         ),
@@ -1036,7 +1112,6 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
           ),
           const SizedBox(height: 8),
 
-          // 2. 개인별 사용 금액 (단일 슬림 카드 내에 3명 통합 배치)
           const Text('개인별 정산 요약', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF334155))),
           const SizedBox(height: 4),
           Card(
@@ -1101,7 +1176,6 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
           ),
           const SizedBox(height: 8),
 
-          // 3. 한국 원화 송금 가이드
           const Text('송금 가이드', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF334155))),
           const SizedBox(height: 4),
           transfers.isEmpty
@@ -1150,7 +1224,6 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
                 ),
           const Spacer(),
 
-          // 4. 복사 버튼 (스크롤 없이 화면 최하단에 항상 위치)
           SizedBox(
             width: double.infinity,
             height: 42,
