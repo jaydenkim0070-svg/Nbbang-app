@@ -58,7 +58,7 @@ class Participant {
 class Expense {
   final String id;
   final String title;
-  final int totalAmount; // 원 통화 기준 금액
+  final int totalAmount;
   final CurrencyType currency;
   final String payerId;
   final List<String> involvedIds;
@@ -78,12 +78,26 @@ class Expense {
 class TransferTransaction {
   final String senderId;
   final String receiverId;
-  final int amount; // 원화(KRW) 환산 금액
+  final int amount;
 
   TransferTransaction({
     required this.senderId,
     required this.receiverId,
     required this.amount,
+  });
+}
+
+class ParticipantSummary {
+  final String participantId;
+  final int totalPaid; // 결제한 금액
+  final int totalUsed; // 사용(부담)한 금액
+  final int netBalance; // 차액 (+: 받을 돈, -: 보낼 돈)
+
+  ParticipantSummary({
+    required this.participantId,
+    required this.totalPaid,
+    required this.totalUsed,
+    required this.netBalance,
   });
 }
 
@@ -94,12 +108,11 @@ class SettlementCalculator {
   static const int unit = 10; // 원화 10원 단위 절사
   static const List<String> _weekdays = ['월', '화', '수', '목', '금', '토', '일'];
 
-  // 통화별 금액을 원화(KRW)로 변환
   static int convertToKrw({
     required int amount,
     required CurrencyType currency,
-    required double jpyRatePer100, // 100엔당 원화 환율 (예: 920.0)
-    required double usdRate,       // 1달러당 원화 환율 (기본 1380.0)
+    required double jpyRatePer100,
+    required double usdRate,
   }) {
     switch (currency) {
       case CurrencyType.jpy:
@@ -111,6 +124,51 @@ class SettlementCalculator {
     }
   }
 
+  // 개인별 사용 금액 및 선결제 요약 계산
+  static Map<String, ParticipantSummary> calculateParticipantSummaries({
+    required List<Participant> participants,
+    required List<Expense> expenses,
+    required double jpyRatePer100,
+    required double usdRate,
+  }) {
+    final Map<String, int> paidMap = {for (var p in participants) p.id: 0};
+    final Map<String, int> usedMap = {for (var p in participants) p.id: 0};
+
+    for (var expense in expenses) {
+      if (expense.involvedIds.isEmpty) continue;
+
+      int expenseAmountKrw = convertToKrw(
+        amount: expense.totalAmount,
+        currency: expense.currency,
+        jpyRatePer100: jpyRatePer100,
+        usdRate: usdRate,
+      );
+
+      // 결제자 총 결제액 누적
+      paidMap[expense.payerId] = (paidMap[expense.payerId] ?? 0) + expenseAmountKrw;
+
+      // 참석자별 균등 분할
+      int perPerson = (expenseAmountKrw ~/ expense.involvedIds.length ~/ unit) * unit;
+      int remainder = expenseAmountKrw - (perPerson * expense.involvedIds.length);
+
+      for (var i = 0; i < expense.involvedIds.length; i++) {
+        var memberId = expense.involvedIds[i];
+        int charge = perPerson + (i == 0 ? remainder : 0);
+        usedMap[memberId] = (usedMap[memberId] ?? 0) + charge;
+      }
+    }
+
+    return {
+      for (var p in participants)
+        p.id: ParticipantSummary(
+          participantId: p.id,
+          totalPaid: paidMap[p.id] ?? 0,
+          totalUsed: usedMap[p.id] ?? 0,
+          netBalance: (paidMap[p.id] ?? 0) - (usedMap[p.id] ?? 0),
+        )
+    };
+  }
+
   static List<TransferTransaction> calculateTransfers({
     required List<Participant> participants,
     required List<Expense> expenses,
@@ -119,40 +177,21 @@ class SettlementCalculator {
   }) {
     if (participants.isEmpty || expenses.isEmpty) return [];
 
-    final Map<String, int> netBalances = {for (var p in participants) p.id: 0};
-
-    for (var expense in expenses) {
-      if (expense.involvedIds.isEmpty) continue;
-
-      // 원화로 환산된 지출 금액 계산
-      int expenseAmountKrw = convertToKrw(
-        amount: expense.totalAmount,
-        currency: expense.currency,
-        jpyRatePer100: jpyRatePer100,
-        usdRate: usdRate,
-      );
-
-      netBalances[expense.payerId] =
-          (netBalances[expense.payerId] ?? 0) + expenseAmountKrw;
-
-      int perPerson = (expenseAmountKrw ~/ expense.involvedIds.length ~/ unit) * unit;
-      int remainder = expenseAmountKrw - (perPerson * expense.involvedIds.length);
-
-      for (var i = 0; i < expense.involvedIds.length; i++) {
-        var memberId = expense.involvedIds[i];
-        int charge = perPerson + (i == 0 ? remainder : 0);
-        netBalances[memberId] = (netBalances[memberId] ?? 0) - charge;
-      }
-    }
+    final summaries = calculateParticipantSummaries(
+      participants: participants,
+      expenses: expenses,
+      jpyRatePer100: jpyRatePer100,
+      usdRate: usdRate,
+    );
 
     List<MapEntry<String, int>> creditors = [];
     List<MapEntry<String, int>> debtors = [];
 
-    netBalances.forEach((id, balance) {
-      if (balance > 0) {
-        creditors.add(MapEntry(id, balance));
-      } else if (balance < 0) {
-        debtors.add(MapEntry(id, -balance));
+    summaries.forEach((id, summary) {
+      if (summary.netBalance > 0) {
+        creditors.add(MapEntry(id, summary.netBalance));
+      } else if (summary.netBalance < 0) {
+        debtors.add(MapEntry(id, -summary.netBalance));
       }
     });
 
@@ -221,14 +260,12 @@ class SettlementMainScreen extends StatefulWidget {
 }
 
 class _SettlementMainScreenState extends State<SettlementMainScreen> {
-  // 요청사항 1: 참가자 3명 디폴트 이름 (기명, 쩝, 인발)
   final List<Participant> _participants = [
     Participant(id: '1', name: '기명'),
     Participant(id: '2', name: '쩝'),
     Participant(id: '3', name: '인발'),
   ];
 
-  // 디폴트 샘플 지출 (일본 엔화)
   final List<Expense> _expenses = [
     Expense(
       id: 'e1',
@@ -241,7 +278,6 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
     ),
   ];
 
-  // 환율 설정 (디폴트: 100엔당 920원, 1달러당 1380원)
   double _jpyRate = 920.0;
   final double _usdRate = 1380.0;
   late final TextEditingController _jpyRateController;
@@ -303,8 +339,12 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
         .name;
   }
 
-  void _copyResultToClipboard(List<TransferTransaction> transfers, int totalSpentKrw) {
-    if (transfers.isEmpty) {
+  void _copyResultToClipboard(
+    List<TransferTransaction> transfers,
+    int totalSpentKrw,
+    Map<String, ParticipantSummary> summaries,
+  ) {
+    if (transfers.isEmpty && summaries.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('정산할 내역이 없습니다.')),
       );
@@ -314,9 +354,18 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
     final buffer = StringBuffer();
     buffer.writeln('📢 [N빵 정산 내역서 (원화 환산)]');
     buffer.writeln('적용 환율: 100엔당 ${_jpyRate.toStringAsFixed(0)}원');
-    buffer.writeln('총 지출 환산액: ${SettlementCalculator.formatCurrency(totalSpentKrw)}원');
-    buffer.writeln('참여자: ${_participants.map((p) => p.name).join(', ')}');
-    buffer.writeln('\n🧾 [지출 내역]');
+    buffer.writeln('총 지출액: ${SettlementCalculator.formatCurrency(totalSpentKrw)}원');
+
+    buffer.writeln('\n👤 [개인별 사용(부담) 금액]');
+    for (var p in _participants) {
+      final s = summaries[p.id];
+      if (s != null) {
+        buffer.writeln(
+            '• ${p.name}: 사용 ${SettlementCalculator.formatCurrency(s.totalUsed)}원 (결제 ${SettlementCalculator.formatCurrency(s.totalPaid)}원)');
+      }
+    }
+
+    buffer.writeln('\n🧾 [지출 상세 내역]');
     for (var exp in _expenses) {
       final dateStr = SettlementCalculator.formatDateTimeFull(exp.dateTime);
       final krwVal = SettlementCalculator.convertToKrw(
@@ -328,21 +377,25 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
       buffer.writeln(
           '• ${exp.title} ($dateStr): ${SettlementCalculator.formatCurrency(exp.totalAmount)}${exp.currency.unitSymbol} (약 ${SettlementCalculator.formatCurrency(krwVal)}원) [결제: ${_getParticipantName(exp.payerId)}]');
     }
+
     buffer.writeln('\n💸 [한국 원화 송금 가이드]');
-    for (var t in transfers) {
-      buffer.writeln(
-          '• ${_getParticipantName(t.senderId)} ➡️ ${_getParticipantName(t.receiverId)} : ${SettlementCalculator.formatCurrency(t.amount)}원');
+    if (transfers.isEmpty) {
+      buffer.writeln('• 모든 정산이 완료되었습니다.');
+    } else {
+      for (var t in transfers) {
+        buffer.writeln(
+            '• ${_getParticipantName(t.senderId)} ➡️ ${_getParticipantName(t.receiverId)} : ${SettlementCalculator.formatCurrency(t.amount)}원');
+      }
     }
 
     Clipboard.setData(ClipboardData(text: buffer.toString()));
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('원화 정산 결과가 복사되었습니다. 카카오톡에 붙여넣기 하세요!')),
+      const SnackBar(content: Text('개인별 사용금액이 포함된 결과가 복사되었습니다!')),
     );
   }
 
   @override
   Widget build(BuildContext context) {
-    // 모든 지출을 원화로 환산한 총액
     final int totalSpentKrw = _expenses.fold(0, (sum, e) {
       return sum +
           SettlementCalculator.convertToKrw(
@@ -352,6 +405,13 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
             usdRate: _usdRate,
           );
     });
+
+    final summaries = SettlementCalculator.calculateParticipantSummaries(
+      participants: _participants,
+      expenses: _expenses,
+      jpyRatePer100: _jpyRate,
+      usdRate: _usdRate,
+    );
 
     final transfers = SettlementCalculator.calculateTransfers(
       participants: _participants,
@@ -382,7 +442,7 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
           children: [
             _buildParticipantsTab(),
             _buildExpensesTab(),
-            _buildSettlementResultTab(transfers, totalSpentKrw),
+            _buildSettlementResultTab(transfers, totalSpentKrw, summaries),
           ],
         ),
       ),
@@ -610,7 +670,7 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
     );
   }
 
-  // 지출 등록 및 수정 모달 (홈 버튼 겹침 방지 여백 추가 및 통화 선택 기능)
+  // 지출 등록 및 수정 모달 (통화와 결제총액 라인 완벽 일치)
   void _openExpenseFormModal({Expense? expenseToEdit}) {
     if (_participants.length < 2) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -622,8 +682,6 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
     final bool isEdit = expenseToEdit != null;
     final titleController = TextEditingController(text: isEdit ? expenseToEdit.title : '');
     final amountController = TextEditingController(text: isEdit ? expenseToEdit.totalAmount.toString() : '');
-    
-    // 디폴트 통화: 일본 엔화(JPY)
     CurrencyType selectedCurrency = isEdit ? expenseToEdit.currency : CurrencyType.jpy;
     String selectedPayerId = isEdit ? expenseToEdit.payerId : _participants.first.id;
 
@@ -647,7 +705,6 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
       builder: (ctx) {
         return StatefulBuilder(
           builder: (context, setModalState) {
-            // 요청사항 2: 홈버튼/제스처바와 겹치지 않도록 하단 여백 대폭 확장 (+36dp)
             final bottomInset = MediaQuery.of(context).viewInsets.bottom;
             final bottomPadding = MediaQuery.of(context).viewPadding.bottom;
 
@@ -658,7 +715,7 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
                   left: 20,
                   right: 20,
                   top: 20,
-                  bottom: bottomInset + bottomPadding + 36, // 홈 버튼 영역 완벽 분리
+                  bottom: bottomInset + bottomPadding + 36,
                 ),
                 child: SingleChildScrollView(
                   child: Column(
@@ -672,11 +729,15 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
                       const SizedBox(height: 14),
                       TextField(
                         controller: titleController,
-                        decoration: const InputDecoration(labelText: '내용 (예: 1차 라멘, 편의점)'),
+                        decoration: const InputDecoration(
+                          labelText: '내용 (예: 1차 라멘, 편의점)',
+                          border: OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(8))),
+                          contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+                        ),
                       ),
-                      const SizedBox(height: 14),
+                      const SizedBox(height: 12),
 
-                      // 요청사항 3: 통화 선택 및 금액 입력 (디폴트: 일본 엔화)
+                      // 통화와 금액 입력란 높이 및 기준선 정렬 완료
                       Row(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
@@ -684,9 +745,13 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
                             width: 125,
                             child: DropdownButtonFormField<CurrencyType>(
                               value: selectedCurrency,
+                              isExpanded: true,
                               decoration: const InputDecoration(
                                 labelText: '통화',
-                                contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+                                border: OutlineInputBorder(
+                                  borderRadius: BorderRadius.all(Radius.circular(8)),
+                                ),
+                                contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 14),
                               ),
                               items: CurrencyType.values.map((c) {
                                 return DropdownMenuItem(
@@ -701,7 +766,7 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
                               },
                             ),
                           ),
-                          const SizedBox(width: 10),
+                          const SizedBox(width: 8),
                           Expanded(
                             child: TextField(
                               controller: amountController,
@@ -709,6 +774,10 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
                               decoration: InputDecoration(
                                 labelText: '결제 총액',
                                 suffixText: selectedCurrency.unitSymbol,
+                                border: const OutlineInputBorder(
+                                  borderRadius: BorderRadius.all(Radius.circular(8)),
+                                ),
+                                contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
                               ),
                             ),
                           ),
@@ -850,14 +919,18 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
     );
   }
 
-  // 요청사항 4: 정산 결과 화면 (환율 입력 필드 및 원화 일괄 계산)
-  Widget _buildSettlementResultTab(List<TransferTransaction> transfers, int totalSpentKrw) {
+  // 정산 결과 화면: 개인별 사용 금액 및 환율 계산 반영
+  Widget _buildSettlementResultTab(
+    List<TransferTransaction> transfers,
+    int totalSpentKrw,
+    Map<String, ParticipantSummary> summaries,
+  ) {
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16.0),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // 환율 입력 카드
+          // 환율 설정 카드
           Card(
             color: Colors.white,
             child: Padding(
@@ -900,7 +973,7 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
           ),
           const SizedBox(height: 10),
 
-          // 총 지출 요약 카드 (원화 환산액)
+          // 총 지출 요약 카드
           Card(
             color: const Color(0xFFEFF6FF),
             child: Padding(
@@ -919,13 +992,85 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
           ),
           const SizedBox(height: 16),
 
+          // 개인별 정산 요약 카드 목록
+          const Text('개인별 사용(부담) 금액', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+          const SizedBox(height: 8),
+          ..._participants.map((p) {
+            final s = summaries[p.id] ?? ParticipantSummary(participantId: p.id, totalPaid: 0, totalUsed: 0, netBalance: 0);
+            final bool isCreditor = s.netBalance > 0;
+            final bool isDebtor = s.netBalance < 0;
+
+            return Card(
+              margin: const EdgeInsets.only(bottom: 8),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                child: Row(
+                  children: [
+                    CircleAvatar(
+                      radius: 18,
+                      backgroundColor: const Color(0xFFEFF6FF),
+                      child: Text(
+                        p.name.isNotEmpty ? p.name[0] : '?',
+                        style: const TextStyle(color: Color(0xFF2563EB), fontWeight: FontWeight.bold, fontSize: 13),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(p.name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+                          const SizedBox(height: 2),
+                          Text(
+                            '선결제액: ${SettlementCalculator.formatCurrency(s.totalPaid)}원',
+                            style: const TextStyle(color: Color(0xFF64748B), fontSize: 12),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        Text(
+                          '사용: ${SettlementCalculator.formatCurrency(s.totalUsed)}원',
+                          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Color(0xFF0F172A)),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          isCreditor
+                              ? '+${SettlementCalculator.formatCurrency(s.netBalance)}원 수령'
+                              : isDebtor
+                                  ? '-${SettlementCalculator.formatCurrency(-s.netBalance)}원 송금'
+                                  : '정산 완료',
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                            color: isCreditor
+                                ? const Color(0xFF16A34A)
+                                : isDebtor
+                                    ? Colors.redAccent
+                                    : const Color(0xFF94A3B8),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            );
+          }),
+          const SizedBox(height: 16),
+
+          // 최소 송금 가이드
           const Text('한국 원화 송금 가이드', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
           const SizedBox(height: 8),
 
           transfers.isEmpty
-              ? const Padding(
-                  padding: EdgeInsets.symmetric(vertical: 24),
-                  child: Center(child: Text('정산할 내역이 없거나 계산이 완료되었습니다.')),
+              ? const Card(
+                  child: Padding(
+                    padding: EdgeInsets.symmetric(vertical: 20),
+                    child: Center(child: Text('정산할 내역이 없거나 모든 계산이 완료되었습니다.')),
+                  ),
                 )
               : ListView.builder(
                   shrinkWrap: true,
@@ -963,7 +1108,7 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
                 padding: const EdgeInsets.symmetric(vertical: 14),
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
               ),
-              onPressed: () => _copyResultToClipboard(transfers, totalSpentKrw),
+              onPressed: () => _copyResultToClipboard(transfers, totalSpentKrw, summaries),
             ),
           ),
         ],
