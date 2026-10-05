@@ -646,18 +646,31 @@ class _SettlementMainScreenState extends State<SettlementMainScreen>
     );
   }
 
-  // 2탭: 지출 목록 (1행에 금액/환산액/버튼 배치, 2행에 결제자 및 참여자 이름 전체 노출)
   Widget _buildExpensesTab() {
     if (_expenses.isEmpty) {
-      return Scaffold(
-        body: const Center(
-          child: Text('지출 내역이 없습니다.\n아래 + 버튼을 눌러 추가하세요.', textAlign: TextAlign.center),
-        ),
-        floatingActionButton: FloatingActionButton.extended(
-          onPressed: () => _openExpenseFormModal(),
-          backgroundColor: const Color(0xFF2563EB),
-          icon: const Icon(Icons.add, color: Colors.white),
-          label: const Text('지출 등록', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+      return Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          children: [
+            const Spacer(),
+            const Center(
+              child: Text('지출 내역이 없습니다.\n아래 지출 등록 버튼을 눌러 추가하세요.', textAlign: TextAlign.center),
+            ),
+            const Spacer(),
+            SizedBox(
+              width: double.infinity,
+              height: 42,
+              child: FilledButton.icon(
+                onPressed: () => _openExpenseFormModal(),
+                icon: const Icon(Icons.add, size: 18),
+                label: const Text('지출 등록', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                style: FilledButton.styleFrom(
+                  backgroundColor: const Color(0xFF2563EB),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                ),
+              ),
+            ),
+          ],
         ),
       );
     }
@@ -673,47 +686,48 @@ class _SettlementMainScreenState extends State<SettlementMainScreen>
 
     final dateKeys = grouped.keys.toList();
 
-    return Scaffold(
-      body: ListView.builder(
-        controller: _expenseScrollController,
-        padding: const EdgeInsets.only(top: 8, bottom: 80),
-        itemCount: dateKeys.length,
-        itemBuilder: (context, index) {
-          final dateKey = dateKeys[index];
-          final dayExpenses = grouped[dateKey]!;
+    return Column(
+      children: [
+        Expanded(
+          child: ListView.builder(
+            controller: _expenseScrollController,
+            padding: const EdgeInsets.only(top: 8, bottom: 8),
+            itemCount: dateKeys.length,
+            itemBuilder: (context, index) {
+              final dateKey = dateKeys[index];
+              final dayExpenses = grouped[dateKey]!;
 
-          return Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 12, 16, 6),
-                child: Row(
-                  children: [
-                    const Icon(Icons.calendar_today_outlined, size: 14, color: Color(0xFF2563EB)),
-                    const SizedBox(width: 6),
-                    Text(
-                      dateKey,
-                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF1E293B)),
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 6),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.calendar_today_outlined, size: 14, color: Color(0xFF2563EB)),
+                        const SizedBox(width: 6),
+                        Text(
+                          dateKey,
+                          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF1E293B)),
+                        ),
+                      ],
                     ),
-                  ],
-                ),
-              ),
-              ...dayExpenses.map((exp) {
-                final krwVal = SettlementCalculator.convertToKrw(
-                  amount: exp.totalAmount,
-                  currency: exp.currency,
-                  jpyRatePer100: _jpyRate,
-                  usdRate: _usdRate,
-                );
+                  ),
+                  ...dayExpenses.map((exp) {
+                    final krwVal = SettlementCalculator.convertToKrw(
+                      amount: exp.totalAmount,
+                      currency: exp.currency,
+                      jpyRatePer100: _jpyRate,
+                      usdRate: _usdRate,
+                    );
 
-                return Card(
+                    return Card(
                   margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
                   child: Padding(
                     padding: const EdgeInsets.fromLTRB(12, 9, 10, 9),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        // 1행: [시간] [항목명]  ---  [금액 (환산원화)] [수정] [삭제]
                         Row(
                           children: [
                             Text(
@@ -740,8 +754,19 @@ class _SettlementMainScreenState extends State<SettlementMainScreen>
                                 style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 11),
                               ),
                             ],
+                          ],
+                        ),
+                        const SizedBox(height: 5),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                '결제: ${_getParticipantName(exp.payerId)} · 참여: ${exp.involvedIds.map((id) => _getParticipantName(id)).join(', ')}',
+                                style: const TextStyle(color: Color(0xFF64748B), fontSize: 12, fontWeight: FontWeight.w500),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
                             const SizedBox(width: 6),
-                            // 컴팩트 수정 버튼
                             InkWell(
                               onTap: () => _openExpenseFormModal(expenseToEdit: exp),
                               borderRadius: BorderRadius.circular(4),
@@ -750,8 +775,7 @@ class _SettlementMainScreenState extends State<SettlementMainScreen>
                                 child: Icon(Icons.edit_outlined, size: 16, color: Color(0xFF64748B)),
                               ),
                             ),
-                            const SizedBox(width: 4),
-                            // 컴팩트 삭제 버튼
+                            const SizedBox(width: 6),
                             InkWell(
                               onTap: () => _removeExpense(exp.id),
                               borderRadius: BorderRadius.circular(4),
@@ -762,29 +786,36 @@ class _SettlementMainScreenState extends State<SettlementMainScreen>
                             ),
                           ],
                         ),
-                        const SizedBox(height: 5),
-
-                        // 2행: 결제자 및 참여자 전체 이름 (가로폭 100% 사용하여 이름 온전하게 표기)
-                        Text(
-                          '결제: ${_getParticipantName(exp.payerId)}  ·  참여: ${exp.involvedIds.map((id) => _getParticipantName(id)).join(', ')}',
-                          style: const TextStyle(color: Color(0xFF64748B), fontSize: 12, fontWeight: FontWeight.w500),
-                          overflow: TextOverflow.ellipsis,
-                        ),
                       ],
                     ),
                   ),
                 );
-              }),
-            ],
-          );
-        },
-      ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: () => _openExpenseFormModal(),
-        backgroundColor: const Color(0xFF2563EB),
-        icon: const Icon(Icons.add, color: Colors.white),
-        label: const Text('지출 등록', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-      ),
+                  }),
+                ],
+              );
+            },
+          ),
+        ),
+        SafeArea(
+          top: false,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 6, 16, 12),
+            child: SizedBox(
+              width: double.infinity,
+              height: 42,
+              child: FilledButton.icon(
+                onPressed: () => _openExpenseFormModal(),
+                icon: const Icon(Icons.add, size: 18),
+                label: const Text('지출 등록', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                style: FilledButton.styleFrom(
+                  backgroundColor: const Color(0xFF2563EB),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
     );
   }
 
@@ -1072,14 +1103,16 @@ class _SettlementMainScreenState extends State<SettlementMainScreen>
     );
   }
 
-  // 3탭: 정산 결과
+  // 3탭: 정산 결과 (홈 버튼 간섭 방지를 위해 하단 여백 약 10mm(44dp) 추가)
   Widget _buildSettlementResultTab(
     List<TransferTransaction> transfers,
     int totalSpentKrw,
     Map<String, ParticipantSummary> summaries,
   ) {
+    final double bottomInset = MediaQuery.of(context).padding.bottom;
+
     return Padding(
-      padding: const EdgeInsets.fromLTRB(14, 10, 14, 12),
+      padding: EdgeInsets.fromLTRB(14, 10, 14, bottomInset + 44),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -1235,7 +1268,7 @@ class _SettlementMainScreenState extends State<SettlementMainScreen>
                                   const Icon(Icons.arrow_forward_rounded, size: 15, color: Color(0xFF2563EB)),
                                   const SizedBox(width: 6),
                                   Text(
-                                    '${_getParticipantName(t.senderId)} ➡️ ${_getParticipantName(t.receiverId)}',
+                                    '${_getParticipantName(t.senderId)} ➡️️ ${_getParticipantName(t.receiverId)}',
                                     style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
                                   ),
                                   const Spacer(),
