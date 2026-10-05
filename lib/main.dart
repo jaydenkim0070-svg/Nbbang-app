@@ -35,8 +35,19 @@ class DutchPayApp extends StatelessWidget {
 }
 
 // ---------------------------------------------------------------------------
-// 1. 도메인 모델
+// 1. 도메인 모델 & 통화 정의
 // ---------------------------------------------------------------------------
+enum CurrencyType {
+  jpy('JPY', '엔화 (¥)', '엔'),
+  krw('KRW', '원화 (₩)', '원'),
+  usd('USD', '달러 (\$)', '\$');
+
+  final String code;
+  final String label;
+  final String unitSymbol;
+  const CurrencyType(this.code, this.label, this.unitSymbol);
+}
+
 class Participant {
   final String id;
   final String name;
@@ -47,7 +58,8 @@ class Participant {
 class Expense {
   final String id;
   final String title;
-  final int totalAmount;
+  final int totalAmount; // 원 통화 기준 금액
+  final CurrencyType currency;
   final String payerId;
   final List<String> involvedIds;
   final DateTime dateTime;
@@ -56,6 +68,7 @@ class Expense {
     required this.id,
     required this.title,
     required this.totalAmount,
+    this.currency = CurrencyType.jpy,
     required this.payerId,
     required this.involvedIds,
     required this.dateTime,
@@ -65,7 +78,7 @@ class Expense {
 class TransferTransaction {
   final String senderId;
   final String receiverId;
-  final int amount;
+  final int amount; // 원화(KRW) 환산 금액
 
   TransferTransaction({
     required this.senderId,
@@ -75,15 +88,34 @@ class TransferTransaction {
 }
 
 // ---------------------------------------------------------------------------
-// 2. 정산 계산 로직 및 포맷 유틸
+// 2. 정산 계산 로직 (환율 환산 및 최소 송금)
 // ---------------------------------------------------------------------------
 class SettlementCalculator {
-  static const int unit = 10; // 10원 단위 절사
+  static const int unit = 10; // 원화 10원 단위 절사
   static const List<String> _weekdays = ['월', '화', '수', '목', '금', '토', '일'];
+
+  // 통화별 금액을 원화(KRW)로 변환
+  static int convertToKrw({
+    required int amount,
+    required CurrencyType currency,
+    required double jpyRatePer100, // 100엔당 원화 환율 (예: 920.0)
+    required double usdRate,       // 1달러당 원화 환율 (기본 1380.0)
+  }) {
+    switch (currency) {
+      case CurrencyType.jpy:
+        return (amount * (jpyRatePer100 / 100.0)).round();
+      case CurrencyType.usd:
+        return (amount * usdRate).round();
+      case CurrencyType.krw:
+        return amount;
+    }
+  }
 
   static List<TransferTransaction> calculateTransfers({
     required List<Participant> participants,
     required List<Expense> expenses,
+    required double jpyRatePer100,
+    required double usdRate,
   }) {
     if (participants.isEmpty || expenses.isEmpty) return [];
 
@@ -92,11 +124,19 @@ class SettlementCalculator {
     for (var expense in expenses) {
       if (expense.involvedIds.isEmpty) continue;
 
-      netBalances[expense.payerId] =
-          (netBalances[expense.payerId] ?? 0) + expense.totalAmount;
+      // 원화로 환산된 지출 금액 계산
+      int expenseAmountKrw = convertToKrw(
+        amount: expense.totalAmount,
+        currency: expense.currency,
+        jpyRatePer100: jpyRatePer100,
+        usdRate: usdRate,
+      );
 
-      int perPerson = (expense.totalAmount ~/ expense.involvedIds.length ~/ unit) * unit;
-      int remainder = expense.totalAmount - (perPerson * expense.involvedIds.length);
+      netBalances[expense.payerId] =
+          (netBalances[expense.payerId] ?? 0) + expenseAmountKrw;
+
+      int perPerson = (expenseAmountKrw ~/ expense.involvedIds.length ~/ unit) * unit;
+      int remainder = expenseAmountKrw - (perPerson * expense.involvedIds.length);
 
       for (var i = 0; i < expense.involvedIds.length; i++) {
         var memberId = expense.involvedIds[i];
@@ -152,7 +192,6 @@ class SettlementCalculator {
     );
   }
 
-  // 날짜 그룹 헤더 형식: YYYY.MM.DD (요일)
   static String formatDateGroup(DateTime dt) {
     final w = _weekdays[dt.weekday - 1];
     final m = dt.month.toString().padLeft(2, '0');
@@ -160,7 +199,6 @@ class SettlementCalculator {
     return '${dt.year}.$m.$d ($w)';
   }
 
-  // 시간 형식: HH:mm
   static String formatTimeOnly(DateTime dt) {
     final hh = dt.hour.toString().padLeft(2, '0');
     final mm = dt.minute.toString().padLeft(2, '0');
@@ -183,22 +221,42 @@ class SettlementMainScreen extends StatefulWidget {
 }
 
 class _SettlementMainScreenState extends State<SettlementMainScreen> {
+  // 요청사항 1: 참가자 3명 디폴트 이름 (기명, 쩝, 인발)
   final List<Participant> _participants = [
-    Participant(id: '1', name: '김민수'),
-    Participant(id: '2', name: '이영희'),
-    Participant(id: '3', name: '박철수'),
+    Participant(id: '1', name: '기명'),
+    Participant(id: '2', name: '쩝'),
+    Participant(id: '3', name: '인발'),
   ];
 
+  // 디폴트 샘플 지출 (일본 엔화)
   final List<Expense> _expenses = [
     Expense(
       id: 'e1',
-      title: '1차 고깃집',
-      totalAmount: 96000,
+      title: '1차 라멘',
+      totalAmount: 4500,
+      currency: CurrencyType.jpy,
       payerId: '1',
       involvedIds: ['1', '2', '3'],
       dateTime: DateTime.now(),
     ),
   ];
+
+  // 환율 설정 (디폴트: 100엔당 920원, 1달러당 1380원)
+  double _jpyRate = 920.0;
+  final double _usdRate = 1380.0;
+  late final TextEditingController _jpyRateController;
+
+  @override
+  void initState() {
+    super.initState();
+    _jpyRateController = TextEditingController(text: _jpyRate.toStringAsFixed(0));
+  }
+
+  @override
+  void dispose() {
+    _jpyRateController.dispose();
+    super.dispose();
+  }
 
   void _addParticipant(String name) {
     if (name.trim().isEmpty) return;
@@ -245,7 +303,7 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
         .name;
   }
 
-  void _copyResultToClipboard(List<TransferTransaction> transfers, int totalSpent) {
+  void _copyResultToClipboard(List<TransferTransaction> transfers, int totalSpentKrw) {
     if (transfers.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('정산할 내역이 없습니다.')),
@@ -254,16 +312,23 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
     }
 
     final buffer = StringBuffer();
-    buffer.writeln('📢 [N빵 정산 내역서]');
-    buffer.writeln('총 지출 금액: ${SettlementCalculator.formatCurrency(totalSpent)}원');
+    buffer.writeln('📢 [N빵 정산 내역서 (원화 환산)]');
+    buffer.writeln('적용 환율: 100엔당 ${_jpyRate.toStringAsFixed(0)}원');
+    buffer.writeln('총 지출 환산액: ${SettlementCalculator.formatCurrency(totalSpentKrw)}원');
     buffer.writeln('참여자: ${_participants.map((p) => p.name).join(', ')}');
     buffer.writeln('\n🧾 [지출 내역]');
     for (var exp in _expenses) {
       final dateStr = SettlementCalculator.formatDateTimeFull(exp.dateTime);
+      final krwVal = SettlementCalculator.convertToKrw(
+        amount: exp.totalAmount,
+        currency: exp.currency,
+        jpyRatePer100: _jpyRate,
+        usdRate: _usdRate,
+      );
       buffer.writeln(
-          '• ${exp.title} ($dateStr): ${SettlementCalculator.formatCurrency(exp.totalAmount)}원 (결제자: ${_getParticipantName(exp.payerId)})');
+          '• ${exp.title} ($dateStr): ${SettlementCalculator.formatCurrency(exp.totalAmount)}${exp.currency.unitSymbol} (약 ${SettlementCalculator.formatCurrency(krwVal)}원) [결제: ${_getParticipantName(exp.payerId)}]');
     }
-    buffer.writeln('\n💸 [최소 송금 안내]');
+    buffer.writeln('\n💸 [한국 원화 송금 가이드]');
     for (var t in transfers) {
       buffer.writeln(
           '• ${_getParticipantName(t.senderId)} ➡️ ${_getParticipantName(t.receiverId)} : ${SettlementCalculator.formatCurrency(t.amount)}원');
@@ -271,16 +336,28 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
 
     Clipboard.setData(ClipboardData(text: buffer.toString()));
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('정산 결과가 복사되었습니다. 카카오톡 등에 붙여넣기 하세요!')),
+      const SnackBar(content: Text('원화 정산 결과가 복사되었습니다. 카카오톡에 붙여넣기 하세요!')),
     );
   }
 
   @override
   Widget build(BuildContext context) {
-    final int totalSpent = _expenses.fold(0, (sum, e) => sum + e.totalAmount);
+    // 모든 지출을 원화로 환산한 총액
+    final int totalSpentKrw = _expenses.fold(0, (sum, e) {
+      return sum +
+          SettlementCalculator.convertToKrw(
+            amount: e.totalAmount,
+            currency: e.currency,
+            jpyRatePer100: _jpyRate,
+            usdRate: _usdRate,
+          );
+    });
+
     final transfers = SettlementCalculator.calculateTransfers(
       participants: _participants,
       expenses: _expenses,
+      jpyRatePer100: _jpyRate,
+      usdRate: _usdRate,
     );
 
     return DefaultTabController(
@@ -305,14 +382,13 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
           children: [
             _buildParticipantsTab(),
             _buildExpensesTab(),
-            _buildSettlementResultTab(transfers, totalSpent),
+            _buildSettlementResultTab(transfers, totalSpentKrw),
           ],
         ),
       ),
     );
   }
 
-  // 1탭: 참가자 관리
   Widget _buildParticipantsTab() {
     final textController = TextEditingController();
 
@@ -390,7 +466,6 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
     );
   }
 
-  // 2탭: 날짜별 지출 목록 (심플 2줄 카드 및 수정/삭제)
   Widget _buildExpensesTab() {
     if (_expenses.isEmpty) {
       return Scaffold(
@@ -406,7 +481,6 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
       );
     }
 
-    // 날짜 역순 정렬 후 날짜별 그룹화
     final sortedExpenses = List<Expense>.from(_expenses)
       ..sort((a, b) => b.dateTime.compareTo(a.dateTime));
 
@@ -425,50 +499,42 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
         itemBuilder: (context, index) {
           final dateKey = dateKeys[index];
           final dayExpenses = grouped[dateKey]!;
-          final dayTotal = dayExpenses.fold(0, (sum, e) => sum + e.totalAmount);
 
           return Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // 날짜 그룹 헤더
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 12, 16, 6),
                 child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Row(
-                      children: [
-                        const Icon(Icons.calendar_today_outlined, size: 14, color: Color(0xFF2563EB)),
-                        const SizedBox(width: 6),
-                        Text(
-                          dateKey,
-                          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF1E293B)),
-                        ),
-                      ],
-                    ),
+                    const Icon(Icons.calendar_today_outlined, size: 14, color: Color(0xFF2563EB)),
+                    const SizedBox(width: 6),
                     Text(
-                      '일일 합계: ${SettlementCalculator.formatCurrency(dayTotal)}원',
-                      style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 12, color: Color(0xFF64748B)),
+                      dateKey,
+                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF1E293B)),
                     ),
                   ],
                 ),
               ),
-
-              // 심플 2줄 카드 리스트
               ...dayExpenses.map((exp) {
+                final krwVal = SettlementCalculator.convertToKrw(
+                  amount: exp.totalAmount,
+                  currency: exp.currency,
+                  jpyRatePer100: _jpyRate,
+                  usdRate: _usdRate,
+                );
+
                 return Card(
                   margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
                   child: Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                     child: Row(
                       children: [
-                        // 지출 정보 영역 (2줄 구성)
                         Expanded(
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              // 1줄: [시간] 항목명  ---  금액
                               Row(
                                 children: [
                                   Text(
@@ -485,24 +551,33 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
                                   ),
                                   const SizedBox(width: 6),
                                   Text(
-                                    '${SettlementCalculator.formatCurrency(exp.totalAmount)}원',
+                                    '${SettlementCalculator.formatCurrency(exp.totalAmount)}${exp.currency.unitSymbol}',
                                     style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Color(0xFF2563EB)),
                                   ),
                                 ],
                               ),
                               const SizedBox(height: 3),
-                              // 2줄: 결제자 및 참여자 목록 요약
-                              Text(
-                                '결제: ${_getParticipantName(exp.payerId)} · 참여(${exp.involvedIds.length}명): ${exp.involvedIds.map((id) => _getParticipantName(id)).join(', ')}',
-                                style: const TextStyle(color: Color(0xFF64748B), fontSize: 12),
-                                overflow: TextOverflow.ellipsis,
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Expanded(
+                                    child: Text(
+                                      '결제: ${_getParticipantName(exp.payerId)} · 참여(${exp.involvedIds.length}명): ${exp.involvedIds.map((id) => _getParticipantName(id)).join(', ')}',
+                                      style: const TextStyle(color: Color(0xFF64748B), fontSize: 12),
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                  if (exp.currency != CurrencyType.krw)
+                                    Text(
+                                      '≈ ${SettlementCalculator.formatCurrency(krwVal)}원',
+                                      style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 11),
+                                    ),
+                                ],
                               ),
                             ],
                           ),
                         ),
-                        const SizedBox(width: 8),
-
-                        // 수정 버튼
+                        const SizedBox(width: 6),
                         IconButton(
                           icon: const Icon(Icons.edit_outlined, size: 18, color: Color(0xFF64748B)),
                           constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
@@ -510,8 +585,6 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
                           tooltip: '수정',
                           onPressed: () => _openExpenseFormModal(expenseToEdit: exp),
                         ),
-
-                        // 삭제 버튼
                         IconButton(
                           icon: const Icon(Icons.delete_outline, size: 18, color: Colors.redAccent),
                           constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
@@ -537,7 +610,7 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
     );
   }
 
-  // 지출 등록 및 수정 모달 (신규/수정 공용)
+  // 지출 등록 및 수정 모달 (홈 버튼 겹침 방지 여백 추가 및 통화 선택 기능)
   void _openExpenseFormModal({Expense? expenseToEdit}) {
     if (_participants.length < 2) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -549,9 +622,11 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
     final bool isEdit = expenseToEdit != null;
     final titleController = TextEditingController(text: isEdit ? expenseToEdit.title : '');
     final amountController = TextEditingController(text: isEdit ? expenseToEdit.totalAmount.toString() : '');
+    
+    // 디폴트 통화: 일본 엔화(JPY)
+    CurrencyType selectedCurrency = isEdit ? expenseToEdit.currency : CurrencyType.jpy;
     String selectedPayerId = isEdit ? expenseToEdit.payerId : _participants.first.id;
 
-    // 참가자가 삭제되어 없는 결제자 ID일 경우 기본값 지정
     if (!_participants.any((p) => p.id == selectedPayerId)) {
       selectedPayerId = _participants.first.id;
     }
@@ -572,159 +647,200 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
       builder: (ctx) {
         return StatefulBuilder(
           builder: (context, setModalState) {
-            return Padding(
-              padding: EdgeInsets.only(
-                left: 20,
-                right: 20,
-                top: 20,
-                bottom: MediaQuery.of(context).viewInsets.bottom + 20,
-              ),
-              child: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      isEdit ? '지출 내역 수정' : '지출 내역 등록',
-                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
-                    ),
-                    const SizedBox(height: 14),
-                    TextField(
-                      controller: titleController,
-                      decoration: const InputDecoration(labelText: '내용 (예: 1차 삼겹살, 볼링장)'),
-                    ),
-                    const SizedBox(height: 10),
-                    TextField(
-                      controller: amountController,
-                      keyboardType: TextInputType.number,
-                      decoration: const InputDecoration(labelText: '결제 총액 (원)', suffixText: '원'),
-                    ),
-                    const SizedBox(height: 14),
+            // 요청사항 2: 홈버튼/제스처바와 겹치지 않도록 하단 여백 대폭 확장 (+36dp)
+            final bottomInset = MediaQuery.of(context).viewInsets.bottom;
+            final bottomPadding = MediaQuery.of(context).viewPadding.bottom;
 
-                    // 일시 선택기
-                    const Text('지출 일시', style: TextStyle(fontWeight: FontWeight.w600, color: Color(0xFF475569))),
-                    const SizedBox(height: 6),
-                    InkWell(
-                      onTap: () async {
-                        final pickedDate = await showDatePicker(
-                          context: context,
-                          initialDate: selectedDateTime,
-                          firstDate: DateTime(2020),
-                          lastDate: DateTime(2035),
-                        );
-                        if (pickedDate == null || !ctx.mounted) return;
-
-                        final pickedTime = await showTimePicker(
-                          context: context,
-                          initialTime: TimeOfDay.fromDateTime(selectedDateTime),
-                        );
-                        if (pickedTime == null) return;
-
-                        setModalState(() {
-                          selectedDateTime = DateTime(
-                            pickedDate.year,
-                            pickedDate.month,
-                            pickedDate.day,
-                            pickedTime.hour,
-                            pickedTime.minute,
-                          );
-                        });
-                      },
-                      borderRadius: BorderRadius.circular(8),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFFF1F5F9),
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(color: const Color(0xFFCBD5E1)),
-                        ),
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            Row(
-                              children: [
-                                const Icon(Icons.calendar_month_outlined, size: 18, color: Color(0xFF2563EB)),
-                                const SizedBox(width: 8),
-                                Text(
-                                  SettlementCalculator.formatDateTimeFull(selectedDateTime),
-                                  style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14, color: Color(0xFF1E293B)),
-                                ),
-                              ],
-                            ),
-                            const Text(
-                              '변경',
-                              style: TextStyle(color: Color(0xFF2563EB), fontWeight: FontWeight.bold, fontSize: 13),
-                            ),
-                          ],
-                        ),
+            return SafeArea(
+              top: false,
+              child: Padding(
+                padding: EdgeInsets.only(
+                  left: 20,
+                  right: 20,
+                  top: 20,
+                  bottom: bottomInset + bottomPadding + 36, // 홈 버튼 영역 완벽 분리
+                ),
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        isEdit ? '지출 내역 수정' : '지출 내역 등록',
+                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
                       ),
-                    ),
-                    const SizedBox(height: 16),
+                      const SizedBox(height: 14),
+                      TextField(
+                        controller: titleController,
+                        decoration: const InputDecoration(labelText: '내용 (예: 1차 라멘, 편의점)'),
+                      ),
+                      const SizedBox(height: 14),
 
-                    const Text('누가 결제했나요?', style: TextStyle(fontWeight: FontWeight.w600, color: Color(0xFF475569))),
-                    DropdownButton<String>(
-                      value: selectedPayerId,
-                      isExpanded: true,
-                      items: _participants.map((p) {
-                        return DropdownMenuItem(value: p.id, child: Text(p.name));
-                      }).toList(),
-                      onChanged: (val) {
-                        if (val != null) setModalState(() => selectedPayerId = val);
-                      },
-                    ),
-                    const SizedBox(height: 14),
+                      // 요청사항 3: 통화 선택 및 금액 입력 (디폴트: 일본 엔화)
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          SizedBox(
+                            width: 125,
+                            child: DropdownButtonFormField<CurrencyType>(
+                              value: selectedCurrency,
+                              decoration: const InputDecoration(
+                                labelText: '통화',
+                                contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+                              ),
+                              items: CurrencyType.values.map((c) {
+                                return DropdownMenuItem(
+                                  value: c,
+                                  child: Text(c.label, style: const TextStyle(fontSize: 13)),
+                                );
+                              }).toList(),
+                              onChanged: (val) {
+                                if (val != null) {
+                                  setModalState(() => selectedCurrency = val);
+                                }
+                              },
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: TextField(
+                              controller: amountController,
+                              keyboardType: TextInputType.number,
+                              decoration: InputDecoration(
+                                labelText: '결제 총액',
+                                suffixText: selectedCurrency.unitSymbol,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 14),
 
-                    const Text('누가 함께했나요?', style: TextStyle(fontWeight: FontWeight.w600, color: Color(0xFF475569))),
-                    const SizedBox(height: 6),
-                    Wrap(
-                      spacing: 8,
-                      children: _participants.map((p) {
-                        final isSelected = selectedInvolved.contains(p.id);
-                        return FilterChip(
-                          label: Text(p.name),
-                          selected: isSelected,
-                          onSelected: (selected) {
-                            setModalState(() {
-                              if (selected) {
-                                selectedInvolved.add(p.id);
-                              } else {
-                                selectedInvolved.remove(p.id);
-                              }
-                            });
-                          },
-                        );
-                      }).toList(),
-                    ),
-                    const SizedBox(height: 20),
+                      const Text('지출 일시', style: TextStyle(fontWeight: FontWeight.w600, color: Color(0xFF475569))),
+                      const SizedBox(height: 6),
+                      InkWell(
+                        onTap: () async {
+                          final pickedDate = await showDatePicker(
+                            context: context,
+                            initialDate: selectedDateTime,
+                            firstDate: DateTime(2020),
+                            lastDate: DateTime(2035),
+                          );
+                          if (pickedDate == null || !ctx.mounted) return;
 
-                    SizedBox(
-                      width: double.infinity,
-                      child: FilledButton(
-                        onPressed: () {
-                          final int? amount = int.tryParse(amountController.text.replaceAll(',', ''));
-                          if (titleController.text.trim().isEmpty || amount == null || amount <= 0 || selectedInvolved.isEmpty) {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(content: Text('입력 항목을 모두 올바르게 채워주세요.')),
+                          final pickedTime = await showTimePicker(
+                            context: context,
+                            initialTime: TimeOfDay.fromDateTime(selectedDateTime),
+                          );
+                          if (pickedTime == null) return;
+
+                          setModalState(() {
+                            selectedDateTime = DateTime(
+                              pickedDate.year,
+                              pickedDate.month,
+                              pickedDate.day,
+                              pickedTime.hour,
+                              pickedTime.minute,
                             );
-                            return;
-                          }
-
-                          final updatedExpense = Expense(
-                            id: isEdit ? expenseToEdit.id : DateTime.now().millisecondsSinceEpoch.toString(),
-                            title: titleController.text.trim(),
-                            totalAmount: amount,
-                            payerId: selectedPayerId,
-                            involvedIds: selectedInvolved,
-                            dateTime: selectedDateTime,
-                          );
-
-                          _saveExpense(updatedExpense, isEdit: isEdit);
-                          Navigator.pop(ctx);
+                          });
                         },
-                        child: Text(isEdit ? '수정 완료' : '지출 저장'),
+                        borderRadius: BorderRadius.circular(8),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFF1F5F9),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: const Color(0xFFCBD5E1)),
+                          ),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              Row(
+                                children: [
+                                  const Icon(Icons.calendar_month_outlined, size: 18, color: Color(0xFF2563EB)),
+                                  const SizedBox(width: 8),
+                                  Text(
+                                    SettlementCalculator.formatDateTimeFull(selectedDateTime),
+                                    style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14, color: Color(0xFF1E293B)),
+                                  ),
+                                ],
+                              ),
+                              const Text(
+                                '변경',
+                                style: TextStyle(color: Color(0xFF2563EB), fontWeight: FontWeight.bold, fontSize: 13),
+                              ),
+                            ],
+                          ),
+                        ),
                       ),
-                    ),
-                  ],
+                      const SizedBox(height: 16),
+
+                      const Text('누가 결제했나요?', style: TextStyle(fontWeight: FontWeight.w600, color: Color(0xFF475569))),
+                      DropdownButton<String>(
+                        value: selectedPayerId,
+                        isExpanded: true,
+                        items: _participants.map((p) {
+                          return DropdownMenuItem(value: p.id, child: Text(p.name));
+                        }).toList(),
+                        onChanged: (val) {
+                          if (val != null) setModalState(() => selectedPayerId = val);
+                        },
+                      ),
+                      const SizedBox(height: 14),
+
+                      const Text('누가 함께했나요?', style: TextStyle(fontWeight: FontWeight.w600, color: Color(0xFF475569))),
+                      const SizedBox(height: 6),
+                      Wrap(
+                        spacing: 8,
+                        children: _participants.map((p) {
+                          final isSelected = selectedInvolved.contains(p.id);
+                          return FilterChip(
+                            label: Text(p.name),
+                            selected: isSelected,
+                            onSelected: (selected) {
+                              setModalState(() {
+                                if (selected) {
+                                  selectedInvolved.add(p.id);
+                                } else {
+                                  selectedInvolved.remove(p.id);
+                                }
+                              });
+                            },
+                          );
+                        }).toList(),
+                      ),
+                      const SizedBox(height: 24),
+
+                      SizedBox(
+                        width: double.infinity,
+                        child: FilledButton(
+                          onPressed: () {
+                            final int? amount = int.tryParse(amountController.text.replaceAll(',', ''));
+                            if (titleController.text.trim().isEmpty || amount == null || amount <= 0 || selectedInvolved.isEmpty) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(content: Text('입력 항목을 모두 올바르게 채워주세요.')),
+                              );
+                              return;
+                            }
+
+                            final updatedExpense = Expense(
+                              id: isEdit ? expenseToEdit.id : DateTime.now().millisecondsSinceEpoch.toString(),
+                              title: titleController.text.trim(),
+                              totalAmount: amount,
+                              currency: selectedCurrency,
+                              payerId: selectedPayerId,
+                              involvedIds: selectedInvolved,
+                              dateTime: selectedDateTime,
+                            );
+
+                            _saveExpense(updatedExpense, isEdit: isEdit);
+                            Navigator.pop(ctx);
+                          },
+                          child: Text(isEdit ? '수정 완료' : '지출 저장'),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             );
@@ -734,13 +850,57 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
     );
   }
 
-  // 3탭: 정산 결과
-  Widget _buildSettlementResultTab(List<TransferTransaction> transfers, int totalSpent) {
-    return Padding(
+  // 요청사항 4: 정산 결과 화면 (환율 입력 필드 및 원화 일괄 계산)
+  Widget _buildSettlementResultTab(List<TransferTransaction> transfers, int totalSpentKrw) {
+    return SingleChildScrollView(
       padding: const EdgeInsets.all(16.0),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // 환율 입력 카드
+          Card(
+            color: Colors.white,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+              child: Row(
+                children: [
+                  const Icon(Icons.currency_exchange, color: Color(0xFF2563EB), size: 22),
+                  const SizedBox(width: 10),
+                  const Expanded(
+                    child: Text(
+                      '엔화 환율 (100엔당)',
+                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF334155)),
+                    ),
+                  ),
+                  SizedBox(
+                    width: 90,
+                    height: 38,
+                    child: TextField(
+                      controller: _jpyRateController,
+                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      textAlign: TextAlign.end,
+                      decoration: const InputDecoration(
+                        suffixText: '원',
+                        contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                        border: OutlineInputBorder(),
+                      ),
+                      onChanged: (val) {
+                        final parsed = double.tryParse(val);
+                        if (parsed != null && parsed > 0) {
+                          setState(() {
+                            _jpyRate = parsed;
+                          });
+                        }
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 10),
+
+          // 총 지출 요약 카드 (원화 환산액)
           Card(
             color: const Color(0xFFEFF6FF),
             child: Padding(
@@ -748,9 +908,9 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  const Text('총 지출 금액', style: TextStyle(fontWeight: FontWeight.w600, color: Color(0xFF1E3A8A))),
+                  const Text('총 지출액 (원화 환산)', style: TextStyle(fontWeight: FontWeight.w600, color: Color(0xFF1E3A8A))),
                   Text(
-                    '${SettlementCalculator.formatCurrency(totalSpent)}원',
+                    '${SettlementCalculator.formatCurrency(totalSpentKrw)}원',
                     style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 20, color: Color(0xFF1E40AF)),
                   ),
                 ],
@@ -758,46 +918,52 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
             ),
           ),
           const SizedBox(height: 16),
-          const Text('최소 송금 가이드', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+
+          const Text('한국 원화 송금 가이드', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
           const SizedBox(height: 8),
-          Expanded(
-            child: transfers.isEmpty
-                ? const Center(child: Text('정산할 내역이 없거나 모든 계산이 완료되었습니다.'))
-                : ListView.builder(
-                    itemCount: transfers.length,
-                    itemBuilder: (context, index) {
-                      final t = transfers[index];
-                      return Card(
-                        margin: const EdgeInsets.only(bottom: 8),
-                        child: ListTile(
-                          leading: const Icon(Icons.arrow_forward_rounded, color: Color(0xFF2563EB)),
-                          title: Row(
-                            children: [
-                              Text(_getParticipantName(t.senderId), style: const TextStyle(fontWeight: FontWeight.bold)),
-                              const Text(' ➡️ ', style: TextStyle(fontSize: 12)),
-                              Text(_getParticipantName(t.receiverId), style: const TextStyle(fontWeight: FontWeight.bold)),
-                            ],
-                          ),
-                          trailing: Text(
-                            '${SettlementCalculator.formatCurrency(t.amount)}원',
-                            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Color(0xFF0F172A)),
-                          ),
+
+          transfers.isEmpty
+              ? const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 24),
+                  child: Center(child: Text('정산할 내역이 없거나 계산이 완료되었습니다.')),
+                )
+              : ListView.builder(
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
+                  itemCount: transfers.length,
+                  itemBuilder: (context, index) {
+                    final t = transfers[index];
+                    return Card(
+                      margin: const EdgeInsets.only(bottom: 8),
+                      child: ListTile(
+                        leading: const Icon(Icons.arrow_forward_rounded, color: Color(0xFF2563EB)),
+                        title: Row(
+                          children: [
+                            Text(_getParticipantName(t.senderId), style: const TextStyle(fontWeight: FontWeight.bold)),
+                            const Text(' ➡️ ', style: TextStyle(fontSize: 12)),
+                            Text(_getParticipantName(t.receiverId), style: const TextStyle(fontWeight: FontWeight.bold)),
+                          ],
                         ),
-                      );
-                    },
-                  ),
-          ),
-          const SizedBox(height: 8),
+                        trailing: Text(
+                          '${SettlementCalculator.formatCurrency(t.amount)}원',
+                          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Color(0xFF0F172A)),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+          const SizedBox(height: 14),
+
           SizedBox(
             width: double.infinity,
             child: FilledButton.icon(
               icon: const Icon(Icons.copy),
-              label: const Text('카카오톡 공유 문구 복사', style: TextStyle(fontWeight: FontWeight.bold)),
+              label: const Text('카카오톡 공유 문구 복사 (원화 기준)', style: TextStyle(fontWeight: FontWeight.bold)),
               style: FilledButton.styleFrom(
                 padding: const EdgeInsets.symmetric(vertical: 14),
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
               ),
-              onPressed: () => _copyResultToClipboard(transfers, totalSpent),
+              onPressed: () => _copyResultToClipboard(transfers, totalSpentKrw),
             ),
           ),
         ],
