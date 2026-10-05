@@ -89,9 +89,9 @@ class TransferTransaction {
 
 class ParticipantSummary {
   final String participantId;
-  final int totalPaid; // 결제한 금액
-  final int totalUsed; // 사용(부담)한 금액
-  final int netBalance; // 차액 (+: 받을 돈, -: 보낼 돈)
+  final int totalPaid;
+  final int totalUsed;
+  final int netBalance;
 
   ParticipantSummary({
     required this.participantId,
@@ -102,10 +102,10 @@ class ParticipantSummary {
 }
 
 // ---------------------------------------------------------------------------
-// 2. 정산 계산 로직 (환율 환산 및 최소 송금)
+// 2. 정산 계산 로직
 // ---------------------------------------------------------------------------
 class SettlementCalculator {
-  static const int unit = 10; // 원화 10원 단위 절사
+  static const int unit = 10;
   static const List<String> _weekdays = ['월', '화', '수', '목', '금', '토', '일'];
 
   static int convertToKrw({
@@ -124,7 +124,6 @@ class SettlementCalculator {
     }
   }
 
-  // 개인별 사용 금액 및 선결제 요약 계산
   static Map<String, ParticipantSummary> calculateParticipantSummaries({
     required List<Participant> participants,
     required List<Expense> expenses,
@@ -144,10 +143,8 @@ class SettlementCalculator {
         usdRate: usdRate,
       );
 
-      // 결제자 총 결제액 누적
       paidMap[expense.payerId] = (paidMap[expense.payerId] ?? 0) + expenseAmountKrw;
 
-      // 참석자별 균등 분할
       int perPerson = (expenseAmountKrw ~/ expense.involvedIds.length ~/ unit) * unit;
       int remainder = expenseAmountKrw - (perPerson * expense.involvedIds.length);
 
@@ -246,6 +243,14 @@ class SettlementCalculator {
 
   static String formatDateTimeFull(DateTime dt) {
     return '${formatDateGroup(dt)} ${formatTimeOnly(dt)}';
+  }
+
+  static String formatDateTimeCompact(DateTime dt) {
+    final m = dt.month.toString().padLeft(2, '0');
+    final d = dt.day.toString().padLeft(2, '0');
+    final hh = dt.hour.toString().padLeft(2, '0');
+    final mm = dt.minute.toString().padLeft(2, '0');
+    return '$m.$d $hh:$mm';
   }
 }
 
@@ -420,8 +425,10 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
       usdRate: _usdRate,
     );
 
+    // [요구사항 2] initialIndex: 1 -> 앱 최초 실행 시 '2. 지출 등록' 탭으로 바로 진입
     return DefaultTabController(
       length: 3,
+      initialIndex: 1,
       child: Scaffold(
         appBar: AppBar(
           title: const Text('N빵 스마트 정산기', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
@@ -670,7 +677,7 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
     );
   }
 
-  // 지출 등록 및 수정 모달 (통화와 결제총액 라인 완벽 일치)
+  // [요구사항 1] 스크롤 이동 없이 지출저장까지 한 화면에 완전히 들어오는 컴팩트 모달
   void _openExpenseFormModal({Expense? expenseToEdit}) {
     if (_participants.length < 2) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -700,7 +707,7 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
       isScrollControlled: true,
       backgroundColor: Colors.white,
       shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
       builder: (ctx) {
         return StatefulBuilder(
@@ -712,51 +719,65 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
               top: false,
               child: Padding(
                 padding: EdgeInsets.only(
-                  left: 20,
-                  right: 20,
-                  top: 20,
-                  bottom: bottomInset + bottomPadding + 36,
+                  left: 16,
+                  right: 16,
+                  top: 14,
+                  bottom: bottomInset + bottomPadding + 14,
                 ),
                 child: SingleChildScrollView(
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        isEdit ? '지출 내역 수정' : '지출 내역 등록',
-                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+                      // 상단 타이틀 & 닫기 버튼
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(
+                            isEdit ? '지출 내역 수정' : '지출 내역 등록',
+                            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.close, size: 20, color: Color(0xFF94A3B8)),
+                            constraints: const BoxConstraints(),
+                            padding: EdgeInsets.zero,
+                            onPressed: () => Navigator.pop(ctx),
+                          ),
+                        ],
                       ),
-                      const SizedBox(height: 14),
+                      const SizedBox(height: 8),
+
+                      // 1. 내용 입력칸 (슬림형)
                       TextField(
                         controller: titleController,
                         decoration: const InputDecoration(
                           labelText: '내용 (예: 1차 라멘, 편의점)',
+                          isDense: true,
                           border: OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(8))),
-                          contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+                          contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 10),
                         ),
                       ),
-                      const SizedBox(height: 12),
+                      const SizedBox(height: 8),
 
-                      // 통화와 금액 입력란 높이 및 기준선 정렬 완료
+                      // 2. 통화 & 결제총액 (나란히 정렬)
                       Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           SizedBox(
-                            width: 125,
+                            width: 115,
                             child: DropdownButtonFormField<CurrencyType>(
                               value: selectedCurrency,
                               isExpanded: true,
+                              isDense: true,
                               decoration: const InputDecoration(
                                 labelText: '통화',
-                                border: OutlineInputBorder(
-                                  borderRadius: BorderRadius.all(Radius.circular(8)),
-                                ),
-                                contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 14),
+                                isDense: true,
+                                border: OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(8))),
+                                contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 10),
                               ),
                               items: CurrencyType.values.map((c) {
                                 return DropdownMenuItem(
                                   value: c,
-                                  child: Text(c.label, style: const TextStyle(fontSize: 13)),
+                                  child: Text(c.label, style: const TextStyle(fontSize: 12)),
                                 );
                               }).toList(),
                               onChanged: (val) {
@@ -774,114 +795,141 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
                               decoration: InputDecoration(
                                 labelText: '결제 총액',
                                 suffixText: selectedCurrency.unitSymbol,
-                                border: const OutlineInputBorder(
-                                  borderRadius: BorderRadius.all(Radius.circular(8)),
-                                ),
-                                contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+                                isDense: true,
+                                border: const OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(8))),
+                                contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
                               ),
                             ),
                           ),
                         ],
                       ),
-                      const SizedBox(height: 14),
+                      const SizedBox(height: 8),
 
-                      const Text('지출 일시', style: TextStyle(fontWeight: FontWeight.w600, color: Color(0xFF475569))),
-                      const SizedBox(height: 6),
-                      InkWell(
-                        onTap: () async {
-                          final pickedDate = await showDatePicker(
-                            context: context,
-                            initialDate: selectedDateTime,
-                            firstDate: DateTime(2020),
-                            lastDate: DateTime(2035),
-                          );
-                          if (pickedDate == null || !ctx.mounted) return;
+                      // 3. 지출 일시 & 결제자 (가로 1행으로 결합하여 세로 공간 절약)
+                      Row(
+                        children: [
+                          // 일시 선택 버튼
+                          Expanded(
+                            flex: 11,
+                            child: InkWell(
+                              onTap: () async {
+                                final pickedDate = await showDatePicker(
+                                  context: context,
+                                  initialDate: selectedDateTime,
+                                  firstDate: DateTime(2020),
+                                  lastDate: DateTime(2035),
+                                );
+                                if (pickedDate == null || !ctx.mounted) return;
 
-                          final pickedTime = await showTimePicker(
-                            context: context,
-                            initialTime: TimeOfDay.fromDateTime(selectedDateTime),
-                          );
-                          if (pickedTime == null) return;
+                                final pickedTime = await showTimePicker(
+                                  context: context,
+                                  initialTime: TimeOfDay.fromDateTime(selectedDateTime),
+                                );
+                                if (pickedTime == null) return;
 
-                          setModalState(() {
-                            selectedDateTime = DateTime(
-                              pickedDate.year,
-                              pickedDate.month,
-                              pickedDate.day,
-                              pickedTime.hour,
-                              pickedTime.minute,
-                            );
-                          });
-                        },
-                        borderRadius: BorderRadius.circular(8),
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFFF1F5F9),
-                            borderRadius: BorderRadius.circular(8),
-                            border: Border.all(color: const Color(0xFFCBD5E1)),
-                          ),
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              Row(
-                                children: [
-                                  const Icon(Icons.calendar_month_outlined, size: 18, color: Color(0xFF2563EB)),
-                                  const SizedBox(width: 8),
-                                  Text(
-                                    SettlementCalculator.formatDateTimeFull(selectedDateTime),
-                                    style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14, color: Color(0xFF1E293B)),
-                                  ),
-                                ],
+                                setModalState(() {
+                                  selectedDateTime = DateTime(
+                                    pickedDate.year,
+                                    pickedDate.month,
+                                    pickedDate.day,
+                                    pickedTime.hour,
+                                    pickedTime.minute,
+                                  );
+                                });
+                              },
+                              borderRadius: BorderRadius.circular(8),
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFFF1F5F9),
+                                  borderRadius: BorderRadius.circular(8),
+                                  border: Border.all(color: const Color(0xFFCBD5E1)),
+                                ),
+                                child: Row(
+                                  children: [
+                                    const Icon(Icons.access_time, size: 15, color: Color(0xFF2563EB)),
+                                    const SizedBox(width: 4),
+                                    Expanded(
+                                      child: Text(
+                                        SettlementCalculator.formatDateTimeCompact(selectedDateTime),
+                                        style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 12, color: Color(0xFF1E293B)),
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ),
+                                    const Text('변경', style: TextStyle(color: Color(0xFF2563EB), fontSize: 11, fontWeight: FontWeight.bold)),
+                                  ],
+                                ),
                               ),
-                              const Text(
-                                '변경',
-                                style: TextStyle(color: Color(0xFF2563EB), fontWeight: FontWeight.bold, fontSize: 13),
-                              ),
-                            ],
+                            ),
                           ),
-                        ),
-                      ),
-                      const SizedBox(height: 16),
+                          const SizedBox(width: 8),
 
-                      const Text('누가 결제했나요?', style: TextStyle(fontWeight: FontWeight.w600, color: Color(0xFF475569))),
-                      DropdownButton<String>(
-                        value: selectedPayerId,
-                        isExpanded: true,
-                        items: _participants.map((p) {
-                          return DropdownMenuItem(value: p.id, child: Text(p.name));
-                        }).toList(),
-                        onChanged: (val) {
-                          if (val != null) setModalState(() => selectedPayerId = val);
-                        },
+                          // 결제자 선택 드롭다운
+                          Expanded(
+                            flex: 9,
+                            child: DropdownButtonFormField<String>(
+                              value: selectedPayerId,
+                              isDense: true,
+                              isExpanded: true,
+                              decoration: const InputDecoration(
+                                labelText: '결제자',
+                                isDense: true,
+                                border: OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(8))),
+                                contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+                              ),
+                              items: _participants.map((p) {
+                                return DropdownMenuItem(value: p.id, child: Text(p.name, style: const TextStyle(fontSize: 13)));
+                              }).toList(),
+                              onChanged: (val) {
+                                if (val != null) setModalState(() => selectedPayerId = val);
+                              },
+                            ),
+                          ),
+                        ],
                       ),
-                      const SizedBox(height: 14),
+                      const SizedBox(height: 8),
 
-                      const Text('누가 함께했나요?', style: TextStyle(fontWeight: FontWeight.w600, color: Color(0xFF475569))),
-                      const SizedBox(height: 6),
-                      Wrap(
-                        spacing: 8,
-                        children: _participants.map((p) {
-                          final isSelected = selectedInvolved.contains(p.id);
-                          return FilterChip(
-                            label: Text(p.name),
-                            selected: isSelected,
-                            onSelected: (selected) {
-                              setModalState(() {
-                                if (selected) {
-                                  selectedInvolved.add(p.id);
-                                } else {
-                                  selectedInvolved.remove(p.id);
-                                }
-                              });
-                            },
-                          );
-                        }).toList(),
+                      // 4. 함께한 사람 (컴팩트 칩 형태)
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.center,
+                        children: [
+                          const Text('참여: ', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 12, color: Color(0xFF475569))),
+                          const SizedBox(width: 4),
+                          Expanded(
+                            child: Wrap(
+                              spacing: 6,
+                              runSpacing: 4,
+                              children: _participants.map((p) {
+                                final isSelected = selectedInvolved.contains(p.id);
+                                return FilterChip(
+                                  label: Text(p.name, style: TextStyle(fontSize: 12, color: isSelected ? Colors.white : const Color(0xFF1E293B))),
+                                  selected: isSelected,
+                                  selectedColor: const Color(0xFF2563EB),
+                                  checkmarkColor: Colors.white,
+                                  visualDensity: VisualDensity.compact,
+                                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                                  onSelected: (selected) {
+                                    setModalState(() {
+                                      if (selected) {
+                                        selectedInvolved.add(p.id);
+                                      } else {
+                                        selectedInvolved.remove(p.id);
+                                      }
+                                    });
+                                  },
+                                );
+                              }).toList(),
+                            ),
+                          ),
+                        ],
                       ),
-                      const SizedBox(height: 24),
+                      const SizedBox(height: 12),
 
+                      // 5. 지출 저장 버튼 (스크롤 없이 바로 클릭 가능)
                       SizedBox(
                         width: double.infinity,
+                        height: 42,
                         child: FilledButton(
                           onPressed: () {
                             final int? amount = int.tryParse(amountController.text.replaceAll(',', ''));
@@ -905,7 +953,10 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
                             _saveExpense(updatedExpense, isEdit: isEdit);
                             Navigator.pop(ctx);
                           },
-                          child: Text(isEdit ? '수정 완료' : '지출 저장'),
+                          style: FilledButton.styleFrom(
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                          ),
+                          child: Text(isEdit ? '수정 완료' : '지출 저장', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
                         ),
                       ),
                     ],
@@ -919,7 +970,6 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
     );
   }
 
-  // 정산 결과 화면: 개인별 사용 금액 및 환율 계산 반영
   Widget _buildSettlementResultTab(
     List<TransferTransaction> transfers,
     int totalSpentKrw,
