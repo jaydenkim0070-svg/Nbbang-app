@@ -289,7 +289,7 @@ class SettlementCalculator {
 }
 
 // ---------------------------------------------------------------------------
-// 3. 메인 화면 (자동 스크롤 및 시간순 정렬 적용)
+// 3. 메인 화면
 // ---------------------------------------------------------------------------
 class SettlementMainScreen extends StatefulWidget {
   const SettlementMainScreen({super.key});
@@ -320,7 +320,6 @@ class _SettlementMainScreenState extends State<SettlementMainScreen>
     _jpyRateController = TextEditingController(text: _jpyRate.toStringAsFixed(0));
     _tabController = TabController(length: 3, vsync: this, initialIndex: 1);
 
-    // 2. 지출 등록 탭으로 전환될 때 최신 내역(맨 아래)으로 자동 스크롤
     _tabController.addListener(() {
       if (_tabController.index == 1) {
         _scrollToBottom(animate: false);
@@ -338,7 +337,6 @@ class _SettlementMainScreenState extends State<SettlementMainScreen>
     super.dispose();
   }
 
-  // 지출 목록 최신 항목(맨 아래)으로 자동 이동
   void _scrollToBottom({bool animate = true}) {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_expenseScrollController.hasClients) {
@@ -443,7 +441,7 @@ class _SettlementMainScreenState extends State<SettlementMainScreen>
       }
     });
     _saveAllData();
-    _scrollToBottom(animate: true); // 추가/수정 후 최신 내역으로 자동 스크롤
+    _scrollToBottom(animate: true);
   }
 
   void _removeExpense(String id) {
@@ -485,7 +483,6 @@ class _SettlementMainScreenState extends State<SettlementMainScreen>
       }
     }
 
-    // 공유 텍스트도 과거 순서에서 최신 순서대로 정리
     final sortedForShare = List<Expense>.from(_expenses)
       ..sort((a, b) => a.dateTime.compareTo(b.dateTime));
 
@@ -649,7 +646,7 @@ class _SettlementMainScreenState extends State<SettlementMainScreen>
     );
   }
 
-  // 2탭: 지출 목록 (이전 내역 상단, 최신 내역 하단 + 최신 내역 자동 포커스)
+  // 2탭: 지출 목록 (1행에 금액/환산액/버튼 배치, 2행에 결제자 및 참여자 이름 전체 노출)
   Widget _buildExpensesTab() {
     if (_expenses.isEmpty) {
       return Scaffold(
@@ -665,7 +662,6 @@ class _SettlementMainScreenState extends State<SettlementMainScreen>
       );
     }
 
-    // 시간 순서대로 정렬: 이전꺼가 위로, 최신꺼가 밑으로 (오름차순)
     final sortedExpenses = List<Expense>.from(_expenses)
       ..sort((a, b) => a.dateTime.compareTo(b.dateTime));
 
@@ -679,7 +675,7 @@ class _SettlementMainScreenState extends State<SettlementMainScreen>
 
     return Scaffold(
       body: ListView.builder(
-        controller: _expenseScrollController, // 자동 스크롤 컨트롤러 연동
+        controller: _expenseScrollController,
         padding: const EdgeInsets.only(top: 8, bottom: 80),
         itemCount: dateKeys.length,
         itemBuilder: (context, index) {
@@ -713,70 +709,66 @@ class _SettlementMainScreenState extends State<SettlementMainScreen>
                 return Card(
                   margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
                   child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                    child: Row(
+                    padding: const EdgeInsets.fromLTRB(12, 9, 10, 9),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Row(
-                                children: [
-                                  Text(
-                                    SettlementCalculator.formatTimeOnly(exp.dateTime),
-                                    style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 12, fontWeight: FontWeight.w600),
-                                  ),
-                                  const SizedBox(width: 6),
-                                  Expanded(
-                                    child: Text(
-                                      exp.title,
-                                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Color(0xFF0F172A)),
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                  ),
-                                  const SizedBox(width: 6),
-                                  Text(
-                                    '${SettlementCalculator.formatCurrency(exp.totalAmount)}${exp.currency.unitSymbol}',
-                                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Color(0xFF2563EB)),
-                                  ),
-                                ],
+                        // 1행: [시간] [항목명]  ---  [금액 (환산원화)] [수정] [삭제]
+                        Row(
+                          children: [
+                            Text(
+                              SettlementCalculator.formatTimeOnly(exp.dateTime),
+                              style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 12, fontWeight: FontWeight.w600),
+                            ),
+                            const SizedBox(width: 6),
+                            Expanded(
+                              child: Text(
+                                exp.title,
+                                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Color(0xFF0F172A)),
+                                overflow: TextOverflow.ellipsis,
                               ),
-                              const SizedBox(height: 3),
-                              Row(
-                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                children: [
-                                  Expanded(
-                                    child: Text(
-                                      '결제: ${_getParticipantName(exp.payerId)} · 참여(${exp.involvedIds.length}명): ${exp.involvedIds.map((id) => _getParticipantName(id)).join(', ')}',
-                                      style: const TextStyle(color: Color(0xFF64748B), fontSize: 12),
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                  ),
-                                  if (exp.currency != CurrencyType.krw)
-                                    Text(
-                                      '≈ ${SettlementCalculator.formatCurrency(krwVal)}원',
-                                      style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 11),
-                                    ),
-                                ],
+                            ),
+                            const SizedBox(width: 6),
+                            Text(
+                              '${SettlementCalculator.formatCurrency(exp.totalAmount)}${exp.currency.unitSymbol}',
+                              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Color(0xFF2563EB)),
+                            ),
+                            if (exp.currency != CurrencyType.krw) ...[
+                              const SizedBox(width: 4),
+                              Text(
+                                '(≈${SettlementCalculator.formatCurrency(krwVal)}원)',
+                                style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 11),
                               ),
                             ],
-                          ),
+                            const SizedBox(width: 6),
+                            // 컴팩트 수정 버튼
+                            InkWell(
+                              onTap: () => _openExpenseFormModal(expenseToEdit: exp),
+                              borderRadius: BorderRadius.circular(4),
+                              child: const Padding(
+                                padding: EdgeInsets.all(3),
+                                child: Icon(Icons.edit_outlined, size: 16, color: Color(0xFF64748B)),
+                              ),
+                            ),
+                            const SizedBox(width: 4),
+                            // 컴팩트 삭제 버튼
+                            InkWell(
+                              onTap: () => _removeExpense(exp.id),
+                              borderRadius: BorderRadius.circular(4),
+                              child: const Padding(
+                                padding: EdgeInsets.all(3),
+                                child: Icon(Icons.delete_outline, size: 16, color: Colors.redAccent),
+                              ),
+                            ),
+                          ],
                         ),
-                        const SizedBox(width: 6),
-                        IconButton(
-                          icon: const Icon(Icons.edit_outlined, size: 18, color: Color(0xFF64748B)),
-                          constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-                          padding: EdgeInsets.zero,
-                          tooltip: '수정',
-                          onPressed: () => _openExpenseFormModal(expenseToEdit: exp),
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.delete_outline, size: 18, color: Colors.redAccent),
-                          constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-                          padding: EdgeInsets.zero,
-                          tooltip: '삭제',
-                          onPressed: () => _removeExpense(exp.id),
+                        const SizedBox(height: 5),
+
+                        // 2행: 결제자 및 참여자 전체 이름 (가로폭 100% 사용하여 이름 온전하게 표기)
+                        Text(
+                          '결제: ${_getParticipantName(exp.payerId)}  ·  참여: ${exp.involvedIds.map((id) => _getParticipantName(id)).join(', ')}',
+                          style: const TextStyle(color: Color(0xFF64748B), fontSize: 12, fontWeight: FontWeight.w500),
+                          overflow: TextOverflow.ellipsis,
                         ),
                       ],
                     ),
