@@ -28,6 +28,7 @@ jobs:
         run: |
           cp lib/main.dart /tmp/main.dart.bak
           flutter create --org com.nbbang.app --project-name nbbang_app --platforms=android .
+          flutter pub add shared_preferences
           cp /tmp/main.dart.bak lib/main.dart
 
       - name: APK 릴리스 빌드 실행
