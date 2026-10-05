@@ -289,7 +289,7 @@ class SettlementCalculator {
 }
 
 // ---------------------------------------------------------------------------
-// 3. 메인 화면 (저장소 데이터 영구 보존)
+// 3. 메인 화면 (자동 스크롤 및 시간순 정렬 적용)
 // ---------------------------------------------------------------------------
 class SettlementMainScreen extends StatefulWidget {
   const SettlementMainScreen({super.key});
@@ -298,7 +298,11 @@ class SettlementMainScreen extends StatefulWidget {
   State<SettlementMainScreen> createState() => _SettlementMainScreenState();
 }
 
-class _SettlementMainScreenState extends State<SettlementMainScreen> {
+class _SettlementMainScreenState extends State<SettlementMainScreen>
+    with SingleTickerProviderStateMixin {
+  late TabController _tabController;
+  final ScrollController _expenseScrollController = ScrollController();
+
   List<Participant> _participants = [
     Participant(id: '1', name: '기명'),
     Participant(id: '2', name: '쩝'),
@@ -314,16 +318,44 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
   void initState() {
     super.initState();
     _jpyRateController = TextEditingController(text: _jpyRate.toStringAsFixed(0));
-    _loadSavedData(); // 시작 시 저장된 데이터 복원
+    _tabController = TabController(length: 3, vsync: this, initialIndex: 1);
+
+    // 2. 지출 등록 탭으로 전환될 때 최신 내역(맨 아래)으로 자동 스크롤
+    _tabController.addListener(() {
+      if (_tabController.index == 1) {
+        _scrollToBottom(animate: false);
+      }
+    });
+
+    _loadSavedData();
   }
 
   @override
   void dispose() {
+    _tabController.dispose();
+    _expenseScrollController.dispose();
     _jpyRateController.dispose();
     super.dispose();
   }
 
-  // --- 로컬 디스크 데이터 불러오기 ---
+  // 지출 목록 최신 항목(맨 아래)으로 자동 이동
+  void _scrollToBottom({bool animate = true}) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_expenseScrollController.hasClients) {
+        final target = _expenseScrollController.position.maxScrollExtent;
+        if (animate) {
+          _expenseScrollController.animateTo(
+            target,
+            duration: const Duration(milliseconds: 250),
+            curve: Curves.easeOut,
+          );
+        } else {
+          _expenseScrollController.jumpTo(target);
+        }
+      }
+    });
+  }
+
   Future<void> _loadSavedData() async {
     final prefs = await SharedPreferences.getInstance();
 
@@ -344,7 +376,6 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
       final List decoded = jsonDecode(eJson);
       _expenses = decoded.map((e) => Expense.fromJson(e)).toList();
     } else {
-      // 최초 실행 시에만 기본 샘플 제공
       _expenses = [
         Expense(
           id: 'e1',
@@ -359,10 +390,12 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
       _saveAllData();
     }
 
-    if (mounted) setState(() {});
+    if (mounted) {
+      setState(() {});
+      _scrollToBottom(animate: false);
+    }
   }
 
-  // --- 로컬 디스크에 데이터 영구 저장 ---
   Future<void> _saveAllData() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setDouble('jpy_rate', _jpyRate);
@@ -410,6 +443,7 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
       }
     });
     _saveAllData();
+    _scrollToBottom(animate: true); // 추가/수정 후 최신 내역으로 자동 스크롤
   }
 
   void _removeExpense(String id) {
@@ -451,8 +485,12 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
       }
     }
 
+    // 공유 텍스트도 과거 순서에서 최신 순서대로 정리
+    final sortedForShare = List<Expense>.from(_expenses)
+      ..sort((a, b) => a.dateTime.compareTo(b.dateTime));
+
     buffer.writeln('\n🧾 [지출 상세 내역]');
-    for (var exp in _expenses) {
+    for (var exp in sortedForShare) {
       final dateStr = SettlementCalculator.formatDateTimeFull(exp.dateTime);
       final krwVal = SettlementCalculator.convertToKrw(
         amount: exp.totalAmount,
@@ -506,32 +544,30 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
       usdRate: _usdRate,
     );
 
-    return DefaultTabController(
-      length: 3,
-      initialIndex: 1,
-      child: Scaffold(
-        appBar: AppBar(
-          title: const Text('N빵 스마트 정산기', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
-          backgroundColor: Colors.white,
-          foregroundColor: const Color(0xFF1E293B),
-          elevation: 0.5,
-          bottom: const TabBar(
-            labelColor: Color(0xFF2563EB),
-            indicatorColor: Color(0xFF2563EB),
-            tabs: [
-              Tab(text: '1. 참가자'),
-              Tab(text: '2. 지출 등록'),
-              Tab(text: '3. 정산 결과'),
-            ],
-          ),
-        ),
-        body: TabBarView(
-          children: [
-            _buildParticipantsTab(),
-            _buildExpensesTab(),
-            _buildSettlementResultTab(transfers, totalSpentKrw, summaries),
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('N빵 스마트 정산기', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+        backgroundColor: Colors.white,
+        foregroundColor: const Color(0xFF1E293B),
+        elevation: 0.5,
+        bottom: TabBar(
+          controller: _tabController,
+          labelColor: const Color(0xFF2563EB),
+          indicatorColor: const Color(0xFF2563EB),
+          tabs: const [
+            Tab(text: '1. 참가자'),
+            Tab(text: '2. 지출 등록'),
+            Tab(text: '3. 정산 결과'),
           ],
         ),
+      ),
+      body: TabBarView(
+        controller: _tabController,
+        children: [
+          _buildParticipantsTab(),
+          _buildExpensesTab(),
+          _buildSettlementResultTab(transfers, totalSpentKrw, summaries),
+        ],
       ),
     );
   }
@@ -613,6 +649,7 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
     );
   }
 
+  // 2탭: 지출 목록 (이전 내역 상단, 최신 내역 하단 + 최신 내역 자동 포커스)
   Widget _buildExpensesTab() {
     if (_expenses.isEmpty) {
       return Scaffold(
@@ -628,8 +665,9 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
       );
     }
 
+    // 시간 순서대로 정렬: 이전꺼가 위로, 최신꺼가 밑으로 (오름차순)
     final sortedExpenses = List<Expense>.from(_expenses)
-      ..sort((a, b) => b.dateTime.compareTo(a.dateTime));
+      ..sort((a, b) => a.dateTime.compareTo(b.dateTime));
 
     final Map<String, List<Expense>> grouped = {};
     for (var exp in sortedExpenses) {
@@ -641,6 +679,7 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
 
     return Scaffold(
       body: ListView.builder(
+        controller: _expenseScrollController, // 자동 스크롤 컨트롤러 연동
         padding: const EdgeInsets.only(top: 8, bottom: 80),
         itemCount: dateKeys.length,
         itemBuilder: (context, index) {
@@ -1041,6 +1080,7 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
     );
   }
 
+  // 3탭: 정산 결과
   Widget _buildSettlementResultTab(
     List<TransferTransaction> transfers,
     int totalSpentKrw,
@@ -1099,7 +1139,7 @@ class _SettlementMainScreenState extends State<SettlementMainScreen> {
                               setState(() {
                                 _jpyRate = parsed;
                               });
-                              _saveAllData(); // 환율 변경 시에도 즉시 저장
+                              _saveAllData();
                             }
                           },
                         ),
